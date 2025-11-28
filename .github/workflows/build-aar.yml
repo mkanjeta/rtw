@@ -40,13 +40,11 @@ jobs:
         export LD=$TOOLCHAIN/bin/aarch64-linux-android-ld
         export RANLIB=$TOOLCHAIN/bin/aarch64-linux-android-ranlib
 
-        # ❗ CRITICAL FIX — disable strip
-        export STRIP=:
-
         export EXTRA_CFLAGS="-fPIC"
         export EXTRA_LDFLAGS="-Wl,-z,max-page-size=16384"
 
         cd ffmpeg
+
         ./configure \
           --prefix=$HOME/output/arm64-v8a \
           --target-os=android \
@@ -55,11 +53,12 @@ jobs:
           --cc=$CC \
           --cxx=$CXX \
           --ar=$AR \
-          --ranlib=$LD \
+          --ranlib=$RANLIB \
           --enable-shared \
           --disable-static \
           --disable-programs \
           --disable-doc \
+          --disable-stripping \
           --enable-pic \
           --extra-cflags="$EXTRA_CFLAGS" \
           --extra-ldflags="$EXTRA_LDFLAGS"
