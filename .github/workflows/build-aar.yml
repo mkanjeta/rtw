@@ -24,7 +24,7 @@ jobs:
       run: |
         git clone https://github.com/FFmpeg/FFmpeg ffmpeg-src --depth=1
 
-    - name: Build FFmpeg arm64
+    - name: Build FFmpeg arm64-v8a
       run: |
         export NDK=$HOME/ndk
         export TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
@@ -57,21 +57,20 @@ jobs:
         make -j$(nproc)
         make install
 
-    - name: Create minimal AAR structure
+    - name: Create AAR structure + JNI + Java API
       run: |
         mkdir -p aar/jni/arm64-v8a
-        mkdir -p aar/java
+        mkdir -p aar/java/com/example/ffmpeg
         mkdir -p aar/META-INF
 
         cp $HOME/output/arm64/lib/*.so aar/jni/arm64-v8a/
 
-        # Create manifest
+        # Minimal Manifest
         cat <<EOF > aar/AndroidManifest.xml
         <manifest package="com.example.ffmpeg" />
         EOF
 
-        # Create minimal Java API
-        mkdir -p aar/java/com/example/ffmpeg
+        # Java API
         cat <<EOF > aar/java/com/example/ffmpeg/FFmpeg.java
         package com.example.ffmpeg;
 
@@ -82,42 +81,63 @@ jobs:
                 System.loadLibrary("swscale");
                 System.loadLibrary("avcodec");
                 System.loadLibrary("avformat");
+                System.loadLibrary("ffmpegjni");
             }
 
             public static native int execute(String[] argv);
         }
         EOF
 
-        # Create JNI C code
+        # JNI Code (SAFE VERSION - NO strdup)
         mkdir -p jni
-        cat <<EOF > jni/ffmpeg_jni.c
-        #include <jni.h>
-        extern int ffmpeg_execute(int argc, char **argv);
+        cat <<'EOF' > jni/ffmpeg_jni.c
+#include <jni.h>
+#include <stdlib.h>
+#include <string.h>
 
-        JNIEXPORT jint JNICALL
-        Java_com_example_ffmpeg_FFmpeg_execute(JNIEnv* env, jclass clazz, jobjectArray args) {
-            int argc = (*env)->GetArrayLength(env, args);
-            char* argv[argc];
+extern int ffmpeg_execute(int argc, char **argv);
 
-            for (int i = 0; i < argc; i++) {
-                jstring jstr = (jstring)(*env)->GetObjectArrayElement(env, args, i);
-                const char* cstr = (*env)->GetStringUTFChars(env, jstr, 0);
-                argv[i] = strdup(cstr);
-                (*env)->ReleaseStringUTFChars(env, jstr, cstr);
-            }
+static char* my_strdup(const char* s) {
+    size_t len = strlen(s) + 1;
+    char* p = (char*)malloc(len);
+    if (p) memcpy(p, s, len);
+    return p;
+}
 
-            return ffmpeg_execute(argc, argv);
-        }
-        EOF
+JNIEXPORT jint JNICALL
+Java_com_example_ffmpeg_FFmpeg_execute(JNIEnv* env, jclass clazz, jobjectArray args) {
+    int argc = (*env)->GetArrayLength(env, args);
+    char** argv = (char**)malloc(sizeof(char*) * argc);
 
-        # Compile JNI into .so
+    for (int i = 0; i < argc; i++) {
+        jstring jstr = (jstring)(*env)->GetObjectArrayElement(env, args, i);
+        const char* raw = (*env)->GetStringUTFChars(env, jstr, 0);
+        argv[i] = my_strdup(raw);
+        (*env)->ReleaseStringUTFChars(env, jstr, raw);
+    }
+
+    int result = ffmpeg_execute(argc, argv);
+
+    for (int i = 0; i < argc; i++) free(argv[i]);
+    free(argv);
+
+    return result;
+}
+EOF
+
+        # Build JNI shared library
         export CC="$HOME/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang"
         $CC -shared jni/ffmpeg_jni.c -o aar/jni/arm64-v8a/libffmpegjni.so -fPIC
 
-        # Package into AAR
-        cd aar
-        zip -r ../ffmpeg-full-16kb.aar .
+        # Compile Java into classes.jar
+        mkdir -p aar/classes
+        javac -source 8 -target 8 -d aar/classes aar/java/com/example/ffmpeg/FFmpeg.java
+        cd aar/classes
+        zip -r ../classes.jar .
         cd ..
+
+        # Build final AAR
+        zip -r ../ffmpeg-full-16kb.aar .
 
     - name: Upload AAR
       uses: actions/upload-artifact@v4
