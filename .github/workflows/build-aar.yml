@@ -33,11 +33,15 @@ jobs:
         export NDK=$HOME/ndk
         export TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
         export API=21
+
         export CC=$TOOLCHAIN/bin/aarch64-linux-android21-clang
         export CXX=$TOOLCHAIN/bin/aarch64-linux-android21-clang++
         export AR=$TOOLCHAIN/bin/aarch64-linux-android-ar
         export LD=$TOOLCHAIN/bin/aarch64-linux-android-ld
         export RANLIB=$TOOLCHAIN/bin/aarch64-linux-android-ranlib
+
+        # ❗ CRITICAL FIX — disable strip
+        export STRIP=:
 
         export EXTRA_CFLAGS="-fPIC"
         export EXTRA_LDFLAGS="-Wl,-z,max-page-size=16384"
@@ -51,7 +55,7 @@ jobs:
           --cc=$CC \
           --cxx=$CXX \
           --ar=$AR \
-          --ranlib=$RANLIB \
+          --ranlib=$LD \
           --enable-shared \
           --disable-static \
           --disable-programs \
