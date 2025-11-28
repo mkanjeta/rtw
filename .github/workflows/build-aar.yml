@@ -1,4 +1,4 @@
-name: Build Full FFmpeg AAR (Latest + 16KB)
+name: Build FFmpeg AAR (16KB)
 
 on:
   workflow_dispatch:
@@ -8,7 +8,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
     - name: Install dependencies
       run: |
         sudo apt update
@@ -31,10 +30,10 @@ jobs:
         export TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
         export API=21
 
-        export CC="$TOOLCHAIN/bin/aarch64-linux-android${API}-clang"
-        export CXX="$TOOLCHAIN/bin/aarch64-linux-android${API}-clang++"
-        export AR="$TOOLCHAIN/bin/aarch64-linux-android-ar"
-        export RANLIB="$TOOLCHAIN/bin/aarch64-linux-android-ranlib"
+        export CC=$TOOLCHAIN/bin/aarch64-linux-android${API}-clang
+        export CXX=$TOOLCHAIN/bin/aarch64-linux-android${API}-clang++
+        export AR=$TOOLCHAIN/bin/aarch64-linux-android-ar
+        export RANLIB=$TOOLCHAIN/bin/aarch64-linux-android-ranlib
 
         mkdir -p build-arm64
         cp -r ffmpeg-src build-arm64/ffmpeg
@@ -66,77 +65,67 @@ jobs:
 
         cp $HOME/output/arm64/lib/*.so aar/jni/arm64-v8a/
 
-        # Manifest
         echo '<manifest package="com.example.ffmpeg" />' > aar/AndroidManifest.xml
 
-        # Java API
-        cat > aar/java/com/example/ffmpeg/FFmpeg.java <<'EOF'
-package com.example.ffmpeg;
+        echo 'package com.example.ffmpeg;
 
-public class FFmpeg {
-    static {
-        System.loadLibrary("avutil");
-        System.loadLibrary("swresample");
-        System.loadLibrary("swscale");
-        System.loadLibrary("avcodec");
-        System.loadLibrary("avformat");
-        System.loadLibrary("ffmpegjni");
-    }
+        public class FFmpeg {
+            static {
+                System.loadLibrary("avutil");
+                System.loadLibrary("swresample");
+                System.loadLibrary("swscale");
+                System.loadLibrary("avcodec");
+                System.loadLibrary("avformat");
+                System.loadLibrary("ffmpegjni");
+            }
 
-    public static native int execute(String[] argv);
-}
-EOF
+            public static native int execute(String[] argv);
+        }' > aar/java/com/example/ffmpeg/FFmpeg.java
 
-        # JNI Code (safe version — no strdup)
-        cat > jni/ffmpeg_jni.c <<'EOF'
-#include <jni.h>
-#include <stdlib.h>
-#include <string.h>
+        echo '#include <jni.h>
+        #include <stdlib.h>
+        #include <string.h>
 
-extern int ffmpeg_execute(int argc, char **argv);
+        extern int ffmpeg_execute(int argc, char **argv);
 
-static char* my_strdup(const char* s) {
-    size_t len = strlen(s) + 1;
-    char* p = (char*)malloc(len);
-    if (p) memcpy(p, s, len);
-    return p;
-}
+        static char* my_strdup(const char* s) {
+            size_t len = strlen(s) + 1;
+            char* p = (char*)malloc(len);
+            if (p) memcpy(p, s, len);
+            return p;
+        }
 
-JNIEXPORT jint JNICALL
-Java_com_example_ffmpeg_FFmpeg_execute(JNIEnv* env, jclass clazz, jobjectArray args) {
-    int argc = (*env)->GetArrayLength(env, args);
-    char** argv = (char**)malloc(sizeof(char*) * argc);
+        JNIEXPORT jint JNICALL
+        Java_com_example_ffmpeg_FFmpeg_execute(JNIEnv* env, jclass clazz, jobjectArray args) {
+            int argc = (*env)->GetArrayLength(env, args);
+            char** argv = (char**)malloc(sizeof(char*) * argc);
 
-    for (int i = 0; i < argc; i++) {
-        jstring jstr = (jstring)(*env)->GetObjectArrayElement(env, args, i);
-        const char* raw = (*env)->GetStringUTFChars(env, jstr, 0);
-        argv[i] = my_strdup(raw);
-        (*env)->ReleaseStringUTFChars(env, jstr, raw);
-    }
+            for (int i = 0; i < argc; i++) {
+                jstring jstr = (jstring)(*env)->GetObjectArrayElement(env, args, i);
+                const char* raw = (*env)->GetStringUTFChars(env, jstr, 0);
+                argv[i] = my_strdup(raw);
+                (*env)->ReleaseStringUTFChars(env, jstr, raw);
+            }
 
-    int result = ffmpeg_execute(argc, argv);
+            int result = ffmpeg_execute(argc, argv);
 
-    for (int i = 0; i < argc; i++) free(argv[i]);
-    free(argv);
+            for (int i = 0; i < argc; i++) free(argv[i]);
+            free(argv);
 
-    return result;
-}
-EOF
+            return result;
+        }' > jni/ffmpeg_jni.c
 
-        # Build JNI shared lib
         $HOME/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang \
           -shared jni/ffmpeg_jni.c \
           -o aar/jni/arm64-v8a/libffmpegjni.so \
           -fPIC
 
-        # Compile Java → classes.jar
         mkdir -p aar/classes
         javac -source 8 -target 8 -d aar/classes aar/java/com/example/ffmpeg/FFmpeg.java
         cd aar/classes
         zip -r ../classes.jar .
         cd ../..
 
-        # Build final AAR
         cd aar
         zip -r ../ffmpeg-full-16kb.aar .
         cd ..
