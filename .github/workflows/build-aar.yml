@@ -1,4 +1,4 @@
-name: Build FFmpeg-Kit AAR (latest FFmpeg + 16KB)
+name: Build Full FFmpeg-Kit AAR (Latest FFmpeg + 16KB)
 
 on:
   workflow_dispatch:
@@ -7,204 +7,68 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      NDK_VERSION: "r26d"
-      NDK_ZIP: "android-ndk-r26d-linux.zip"
-      NDK_URL: "https://dl.google.com/android/repository/android-ndk-r26d-linux.zip"
-      OUTPUT_AAR_NAME: "ffmpeg-kit-android-16kb.aar"
-      ABIS: "arm64-v8a armeabi-v7a x86_64 x86"
-      API_LEVEL: "21"
+      API: "21"
+      ABIS: "arm64-v8a"
 
     steps:
-    - name: Checkout (builder repo)
-      uses: actions/checkout@v4
 
-    - name: Install build deps
+    - name: Install dependencies
       run: |
         sudo apt update
-        sudo apt install -y yasm nasm unzip make automake autoconf libtool pkg-config git default-jdk
+        sudo apt install -y yasm nasm unzip git build-essential openjdk-17-jdk pkg-config automake autoconf libtool
 
     - name: Download Android NDK r26d
       run: |
-        wget -q $NDK_URL
-        unzip -q $NDK_ZIP
         mkdir -p $HOME/ndk
-        mv android-ndk-*/* $HOME/ndk/
+        wget https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
+        unzip -q android-ndk-r26d-linux.zip
+        mv android-ndk-r26d/* $HOME/ndk/
 
-
-    - name: Clone FFmpeg-Kit (arthenica or a maintained fork)
+    - name: Clone ffmpeg-kit (Java wrapper)
       run: |
-        # Use public ffmpeg-kit repo; if you have a maintained fork, change URL
-        git clone --depth 1 https://github.com/arthenica/ffmpeg-kit.git ffmpeg-kit
+        git clone https://github.com/arthenica/ffmpeg-kit ffmpeg-kit
         cd ffmpeg-kit
         git submodule update --init --recursive || true
 
-    - name: Patch build scripts to force 16KB page size and disable strip
-      working-directory: ffmpeg-kit
+    - name: Clone latest FFmpeg source
       run: |
-        # Many ffmpeg-kit scripts call the ffmpeg configure builder; insert LDFLAGS and disable stripping
-        # We'll patch the generic Android build helper to append the flags to LDFLAGS/CFLAGS used for FFmpeg
-        # These sed edits target common build helper files; adjust paths if repo layout differs.
-        # Insert extra linker flag for max-page-size and disable stripping
-        grep -R --line-number "extra-ldflags" -n || true
-        # Append the 16 KB flag to existing EXTRA_LDFLAGS variables or define if not present
-        find . -type f -name "*.sh" -print0 | xargs -0 sed -i -E "s/(EXTRA_LDFLAGS=)\"?([^\"]*)\"?/\1\"\\2 -Wl,-z,max-page-size=16384\"/g" || true
-        # Also ensure configure line contains --disable-stripping
-        find . -type f -name "*.sh" -print0 | xargs -0 sed -i -E "s/(configure .* )/\\1--disable-stripping /g" || true
-        # If the repo uses gradle external scripts, also inject into those scripts
-        find . -type f -name "*.mk" -print0 | xargs -0 sed -i -E "s/(LDFLAGS[[:space:]]*=)/\\1 -Wl,-z,max-page-size=16384 /g" || true
-        echo "Patched build scripts (best-effort)."
+        git clone https://github.com/FFmpeg/FFmpeg ffmpeg-latest --depth=1
 
-    - name: Build native FFmpeg libraries for all ABIs
-      working-directory: ffmpeg-kit
+    - name: Patch ffmpeg-kit to use latest FFmpeg + 16KB page size
       run: |
-        set -euo pipefail
-        # point to NDK in $HOME/ndk
+        cd ffmpeg-kit
+
+        # Replace bundled FFmpeg sources with your latest FFmpeg
+        rm -rf ffmpeg
+        cp -r ../ffmpeg-latest ffmpeg
+
+        # Inject 16KB alignment & disable stripping into all build scripts
+        find . -type f -name "*.sh" -print0 | xargs -0 sed -i \
+          -e 's/EXTRA_LDFLAGS="/EXTRA_LDFLAGS="-Wl,-z,max-page-size=16384 /' \
+          -e 's/--enable-cross-compile/& --disable-stripping/'
+
+    - name: Build FFmpeg native libs (arm64 only)
+      run: |
         export NDK=$HOME/ndk
-        export TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
-        export API=$API_LEVEL
-        mkdir -p $HOME/output
-        # loop ABIs - configure/build per ABI with flags inserted
-        for ABI in ${ABIS}; do
-          echo "Building ABI: $ABI"
-          case "$ABI" in
-            arm64-v8a)
-              export TARGET=aarch64
-              export ARCH=aarch64
-              export CC=$TOOLCHAIN/bin/aarch64-linux-android${API}-clang
-              ;;
-            armeabi-v7a)
-              export TARGET=armv7
-              export ARCH=arm
-              export CC=$TOOLCHAIN/bin/armv7a-linux-androideabi${API}-clang
-              ;;
-            x86_64)
-              export TARGET=x86_64
-              export ARCH=x86_64
-              export CC=$TOOLCHAIN/bin/x86_64-linux-android${API}-clang
-              ;;
-            x86)
-              export TARGET=x86
-              export ARCH=x86
-              export CC=$TOOLCHAIN/bin/i686-linux-android${API}-clang
-              ;;
-            *)
-              echo "Unknown ABI $ABI" && exit 1
-              ;;
-          esac
+        export API=${API}
 
-          BUILD_DIR=$PWD/ffmpeg-build-$ABI
-          PREFIX=$HOME/output/$ABI
-          mkdir -p $BUILD_DIR $PREFIX
-          rm -rf $BUILD_DIR/*
-          cp -r ffmpeg $BUILD_DIR || true
+        cd ffmpeg-kit
 
-          cd $BUILD_DIR/ffmpeg
-          # ensure configure uses correct compilers/flags (this is a minimal but robust configure)
-          EXTRA_CFLAGS="-fPIC"
-          EXTRA_LDFLAGS="-Wl,-z,max-page-size=16384"
-          ./configure \
-            --prefix=$PREFIX \
-            --target-os=android \
-            --arch=$ARCH \
-            --cpu=$TARGET \
-            --enable-cross-compile \
-            --cross-prefix="" \
-            --cc="$CC" \
-            --enable-shared \
-            --disable-static \
-            --disable-programs \
-            --disable-doc \
-            --disable-stripping \
-            --extra-cflags="$EXTRA_CFLAGS" \
-            --extra-ldflags="$EXTRA_LDFLAGS" \
-            --enable-pic || { cat ffbuild/config.log || true; exit 1; }
-          make -j$(nproc)
-          make install
-          cd $PWD/../../ffmpeg-kit || true
-        done
+        ./android.sh \
+          --enable-gpl \
+          --disable-arm-v7a \
+          --disable-x86 \
+          --disable-x86-64 \
+          --enable-arm-v8a \
+          --api-level=${API}
 
-    - name: Create Android library module structure and copy native libs
-      working-directory: ffmpeg-kit
+    - name: Build final AAR
       run: |
-        # Build a minimal Android library module structure with the FFmpeg-Kit java sources
-        LIBDIR=android-wrapper
-        rm -rf $LIBDIR
-        mkdir -p $LIBDIR/src/main/java
-        mkdir -p $LIBDIR/src/main/jniLibs
-        # copy java sources (this assumes the ffmpeg-kit repo contains a java wrapper module at app/src/main/java or similar)
-        # adjust path according to repo layout: try several known locations
-        if [ -d "android/app/src/main/java" ]; then
-          cp -r android/app/src/main/java/* $LIBDIR/src/main/java/ || true
-        elif [ -d "mobile-java/src/main/java" ]; then
-          cp -r mobile-java/src/main/java/* $LIBDIR/src/main/java/ || true
-        else
-          # fallback: copy any 'com/arthenica' package found
-          find . -path "*/com/arthenica*" -type d -print0 | xargs -0 -I{} bash -c 'mkdir -p $LIBDIR/src/main/java/$(dirname {}) && cp -r {} $LIBDIR/src/main/java/' || true
-        fi
+        cd ffmpeg-kit/android
+        ./gradlew assembleRelease --no-daemon
 
-        # Copy libs for each ABI
-        for ABI in ${ABIS}; do
-          mkdir -p $LIBDIR/src/main/jniLibs/$ABI
-          cp $HOME/output/$ABI/lib/*.so $LIBDIR/src/main/jniLibs/$ABI/ || true
-        done
-
-        # minimal Android manifest and Gradle file
-        cat > $LIBDIR/src/main/AndroidManifest.xml <<'EOF'
-        <manifest package="com.arthenica.mobileffmpeg" />
-        EOF
-
-        cat > $LIBDIR/build.gradle <<'EOF'
-        plugins {
-          id 'com.android.library'
-          id 'maven-publish'
-        }
-
-        android {
-          compileSdk 34
-          namespace 'com.arthenica.mobileffmpeg'
-          defaultConfig {
-            minSdk 21
-            targetSdk 34
-          }
-        }
-        dependencies {}
-        EOF
-
-        # root level gradle wrapper files for a minimal build
-        cat > settings.gradle <<'EOF'
-        include ':ffmpeglib'
-        rootProject.name = 'ffmpeg-kit-builder'
-        EOF
-
-        mkdir -p gradle
-        # create simple multi-module project
-        mv $LIBDIR ffmpeglib
-
-    - name: Build the Android AAR
-      working-directory: ffmpeg-kit
-      run: |
-        # Install Gradle wrapper if not present; use gradle wrapper via distribution
-        if [ ! -f gradlew ]; then
-          wget https://services.gradle.org/distributions/gradle-8.6-bin.zip -O /tmp/gradle.zip
-          unzip -q /tmp/gradle.zip -d /tmp/gradle
-          # produce a tiny gradle wrapper script using system gradle
-          echo "Using system gradle"
-          sudo apt install -y gradle
-        fi
-        ./gradlew :ffmpeglib:assembleRelease --no-daemon --parallel || { tail -n 200 ffmpeglib/build/*.log || true; exit 1; }
-
-    - name: Package and upload AAR
-      working-directory: ffmpeg-kit
-      run: |
-        AAR=ffmpeglib/build/outputs/aar/ffmpeglib-release.aar
-        if [ -f "$AAR" ]; then
-          cp "$AAR" $HOME/${{ env.OUTPUT_AAR_NAME }}
-        else
-          echo "AAR not found at $AAR" && ls -R ffmpeglib/build || true
-          exit 1
-        fi
-    - name: Upload AAR artifact
+    - name: Upload AAR
       uses: actions/upload-artifact@v4
       with:
-        name: ffmpeg-kit-16kb-aar
-        path: $HOME/${{ env.OUTPUT_AAR_NAME }}
+        name: ffmpeg-kit-16kb-android
+        path: ffmpeg-kit/android/kit/build/outputs/aar/*.aar
