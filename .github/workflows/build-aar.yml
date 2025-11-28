@@ -23,11 +23,13 @@ jobs:
         sudo apt update
         sudo apt install -y yasm nasm unzip make automake autoconf libtool pkg-config git default-jdk
 
-    - name: Download Android NDK
+    - name: Download Android NDK r26d
       run: |
         wget -q $NDK_URL
         unzip -q $NDK_ZIP
-        mv android-ndk-* $HOME/ndk
+        mkdir -p $HOME/ndk
+        mv android-ndk-*/* $HOME/ndk/
+
 
     - name: Clone FFmpeg-Kit (arthenica or a maintained fork)
       run: |
