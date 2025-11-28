@@ -9,7 +9,7 @@ jobs:
 
     steps:
     - name: Checkout
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Install dependencies
       run: |
@@ -63,7 +63,7 @@ jobs:
         make -j$(nproc)
         make install
 
-    - name: Make AAR
+    - name: Create AAR structure
       run: |
         mkdir -p aar/jni/arm64-v8a
         cp $HOME/output/arm64-v8a/lib/*.so aar/jni/arm64-v8a/
@@ -72,10 +72,10 @@ jobs:
         <manifest package="com.example.ffmpegaar"/>
         EOF
 
-        zip -r ffmpeg-release.aar aar
+        (cd aar && zip -r ../ffmpeg-release.aar .)
 
     - name: Upload AAR
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: ffmpeg-android-aar
         path: ffmpeg-release.aar
