@@ -1,4 +1,4 @@
-name: Build Full FFmpeg-Kit AAR (Latest FFmpeg + 16KB)
+name: Build Full FFmpeg AAR (Latest + 16KB)
 
 on:
   workflow_dispatch:
@@ -6,69 +6,121 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      API: "21"
-      ABIS: "arm64-v8a"
 
     steps:
-
     - name: Install dependencies
       run: |
         sudo apt update
-        sudo apt install -y yasm nasm unzip git build-essential openjdk-17-jdk pkg-config automake autoconf libtool
+        sudo apt install -y yasm nasm unzip git build-essential pkg-config automake autoconf libtool openjdk-17-jdk zip
 
     - name: Download Android NDK r26d
       run: |
         mkdir -p $HOME/ndk
-        wget https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
+        wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
         unzip -q android-ndk-r26d-linux.zip
         mv android-ndk-r26d/* $HOME/ndk/
 
-    - name: Clone ffmpeg-kit (Java wrapper)
+    - name: Download FFmpeg latest
       run: |
-        git clone https://github.com/arthenica/ffmpeg-kit ffmpeg-kit
-        cd ffmpeg-kit
-        git submodule update --init --recursive || true
+        git clone https://github.com/FFmpeg/FFmpeg ffmpeg-src --depth=1
 
-    - name: Clone latest FFmpeg source
-      run: |
-        git clone https://github.com/FFmpeg/FFmpeg ffmpeg-latest --depth=1
-
-    - name: Patch ffmpeg-kit to use latest FFmpeg + 16KB page size
-      run: |
-        cd ffmpeg-kit
-
-        # Replace bundled FFmpeg sources with your latest FFmpeg
-        rm -rf ffmpeg
-        cp -r ../ffmpeg-latest ffmpeg
-
-        # Inject 16KB alignment & disable stripping into all build scripts
-        find . -type f -name "*.sh" -print0 | xargs -0 sed -i \
-          -e 's/EXTRA_LDFLAGS="/EXTRA_LDFLAGS="-Wl,-z,max-page-size=16384 /' \
-          -e 's/--enable-cross-compile/& --disable-stripping/'
-
-    - name: Build FFmpeg native libs (arm64 only)
+    - name: Build FFmpeg arm64
       run: |
         export NDK=$HOME/ndk
-        export API=${API}
+        export TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
+        export API=21
 
-        cd ffmpeg-kit
+        export CC="$TOOLCHAIN/bin/aarch64-linux-android${API}-clang"
+        export CXX="$TOOLCHAIN/bin/aarch64-linux-android${API}-clang++"
+        export AR="$TOOLCHAIN/bin/aarch64-linux-android-ar"
+        export RANLIB="$TOOLCHAIN/bin/aarch64-linux-android-ranlib"
+        export LD="$TOOLCHAIN/bin/aarch64-linux-android-ld"
 
-        ./android.sh \
-          --enable-gpl \
-          --disable-arm-v7a \
-          --disable-x86 \
-          --disable-x86-64 \
-          --enable-arm-v8a \
-          --api-level=${API}
+        mkdir -p build-arm64
+        cp -r ffmpeg-src build-arm64/ffmpeg
+        cd build-arm64/ffmpeg
 
-    - name: Build final AAR
+        ./configure \
+            --prefix=$HOME/output/arm64 \
+            --target-os=android \
+            --arch=aarch64 \
+            --enable-cross-compile \
+            --cc="$CC" \
+            --enable-shared \
+            --disable-static \
+            --disable-programs \
+            --disable-doc \
+            --disable-stripping \
+            --extra-cflags="-fPIC" \
+            --extra-ldflags="-Wl,-z,max-page-size=16384"
+
+        make -j$(nproc)
+        make install
+
+    - name: Create minimal AAR structure
       run: |
-        cd ffmpeg-kit/android
-        ./gradlew assembleRelease --no-daemon
+        mkdir -p aar/jni/arm64-v8a
+        mkdir -p aar/java
+        mkdir -p aar/META-INF
+
+        cp $HOME/output/arm64/lib/*.so aar/jni/arm64-v8a/
+
+        # Create manifest
+        cat <<EOF > aar/AndroidManifest.xml
+        <manifest package="com.example.ffmpeg" />
+        EOF
+
+        # Create minimal Java API
+        mkdir -p aar/java/com/example/ffmpeg
+        cat <<EOF > aar/java/com/example/ffmpeg/FFmpeg.java
+        package com.example.ffmpeg;
+
+        public class FFmpeg {
+            static {
+                System.loadLibrary("avutil");
+                System.loadLibrary("swresample");
+                System.loadLibrary("swscale");
+                System.loadLibrary("avcodec");
+                System.loadLibrary("avformat");
+            }
+
+            public static native int execute(String[] argv);
+        }
+        EOF
+
+        # Create JNI C code
+        mkdir -p jni
+        cat <<EOF > jni/ffmpeg_jni.c
+        #include <jni.h>
+        extern int ffmpeg_execute(int argc, char **argv);
+
+        JNIEXPORT jint JNICALL
+        Java_com_example_ffmpeg_FFmpeg_execute(JNIEnv* env, jclass clazz, jobjectArray args) {
+            int argc = (*env)->GetArrayLength(env, args);
+            char* argv[argc];
+
+            for (int i = 0; i < argc; i++) {
+                jstring jstr = (jstring)(*env)->GetObjectArrayElement(env, args, i);
+                const char* cstr = (*env)->GetStringUTFChars(env, jstr, 0);
+                argv[i] = strdup(cstr);
+                (*env)->ReleaseStringUTFChars(env, jstr, cstr);
+            }
+
+            return ffmpeg_execute(argc, argv);
+        }
+        EOF
+
+        # Compile JNI into .so
+        export CC="$HOME/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang"
+        $CC -shared jni/ffmpeg_jni.c -o aar/jni/arm64-v8a/libffmpegjni.so -fPIC
+
+        # Package into AAR
+        cd aar
+        zip -r ../ffmpeg-full-16kb.aar .
+        cd ..
 
     - name: Upload AAR
       uses: actions/upload-artifact@v4
       with:
-        name: ffmpeg-kit-16kb-android
-        path: ffmpeg-kit/android/kit/build/outputs/aar/*.aar
+        name: full-ffmpeg-16kb-aar
+        path: ffmpeg-full-16kb.aar
