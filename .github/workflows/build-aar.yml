@@ -1,28 +1,20 @@
-name: Build ffmpeg-kit (ffmpeg_min_gpl LTS) AAR (16KB aligned)
+name: Build ffmpeg-kit (ffmpeg_min_gpl LTS) with 16KB FFmpeg
 
 on:
   workflow_dispatch:
     inputs:
       ffmpeg_tag:
-        description: 'FFmpeg tag (LTS). Example: n6.0'
+        description: "FFmpeg LTS tag (example: n6.0)"
+        default: "n6.0"
         required: false
-        default: 'n6.0'
-      build_abis:
-        description: 'Space-separated ABIs to build (arm64-v8a by default)'
-        required: false
-        default: 'arm64-v8a'
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      NDK_ZIP_URL: "https://dl.google.com/android/repository/android-ndk-r26d-linux.zip"
 
     steps:
-    - name: Checkout (this repo)
-      uses: actions/checkout@v4
 
-    - name: Install system deps
+    - name: Install dependencies
       run: |
         sudo apt update
         sudo apt install -y yasm nasm unzip git build-essential pkg-config automake autoconf libtool openjdk-17-jdk zip python3
@@ -30,168 +22,81 @@ jobs:
     - name: Download Android NDK r26d
       run: |
         mkdir -p $HOME/ndk
-        wget -q $NDK_ZIP_URL -O android-ndk.zip
-        unzip -q android-ndk.zip
-        # move contents into $HOME/ndk (avoid nested folder)
+        wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip -O ndk.zip
+        unzip -q ndk.zip
         mv android-ndk-*/* $HOME/ndk/
-        ls -la $HOME/ndk/toolchains/llvm/prebuilt
 
-    - name: Clone ffmpeg-kit (Java wrapper)
+    - name: Clone ffmpeg-kit
       run: |
-        # Use official ffmpeg-kit upstream; change URL if you use a fork
-        git clone --depth 1 https://github.com/arthenica/ffmpeg-kit ffmpeg-kit || (echo "Clone failed" && exit 1)
+        git clone --depth 1 https://github.com/arthenica/ffmpeg-kit ffmpeg-kit
         cd ffmpeg-kit
         git submodule update --init --recursive || true
-        echo "ffmpeg-kit checked out"
 
-    - name: Clone FFmpeg (user-specified tag)
+    - name: Clone FFmpeg LTS
       run: |
         TAG="${{ github.event.inputs.ffmpeg_tag }}"
-        if [ -z "$TAG" ] || [ "$TAG" = " " ]; then
-          TAG="n6.0"
-        fi
-        echo "Using FFmpeg tag: $TAG"
-        git clone --depth 1 --branch "$TAG" https://github.com/FFmpeg/FFmpeg ffmpeg-src || { echo "Failed to clone FFmpeg tag $TAG"; exit 1; }
-        echo "ffmpeg-src cloned at tag $TAG"
+        if [ -z "$TAG" ]; then TAG="n6.0"; fi
+        git clone --depth 1 --branch "$TAG" https://github.com/FFmpeg/FFmpeg ffmpeg-src
 
-    - name: Build FFmpeg per ABI (with 16KB page alignment)
+    - name: Build FFmpeg arm64-v8a with 16KB alignment
       run: |
         set -euo pipefail
-        FFMPEG_SRC="$(pwd)/ffmpeg-src"
-        OUTPUT_ROOT="$HOME/ffout"
-        mkdir -p "$OUTPUT_ROOT"
-        ABIS="${{ github.event.inputs.build_abis }}"
-        if [ -z "$ABIS" ]; then ABIS="arm64-v8a"; fi
-        echo "ABIs to build: $ABIS"
-
-        export NDK="$HOME/ndk"
-        TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
+        export NDK=$HOME/ndk
+        TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
         API=21
 
-        for ABI in $ABIS; do
-          echo "=== Building ABI: $ABI ==="
-          case "$ABI" in
-            arm64-v8a)
-              ARCH=aarch64
-              TARGET_CPU=armv8-a
-              CC=$TOOLCHAIN/bin/aarch64-linux-android${API}-clang
-              RANLIB=$TOOLCHAIN/bin/aarch64-linux-android-ranlib
-              AR=$TOOLCHAIN/bin/aarch64-linux-android-ar
-              ;;
-            armeabi-v7a)
-              ARCH=arm
-              TARGET_CPU=armv7-a
-              CC=$TOOLCHAIN/bin/armv7a-linux-androideabi${API}-clang
-              RANLIB=$TOOLCHAIN/bin/armv7a-linux-androideabi-ranlib || RANLIB=$TOOLCHAIN/bin/arm-linux-androideabi-ranlib
-              AR=$TOOLCHAIN/bin/arm-linux-androideabi-ar
-              ;;
-            x86_64)
-              ARCH=x86_64
-              TARGET_CPU=x86-64
-              CC=$TOOLCHAIN/bin/x86_64-linux-android${API}-clang
-              RANLIB=$TOOLCHAIN/bin/x86_64-linux-android-ranlib
-              AR=$TOOLCHAIN/bin/x86_64-linux-android-ar
-              ;;
-            x86)
-              ARCH=x86
-              TARGET_CPU=i686
-              CC=$TOOLCHAIN/bin/i686-linux-android${API}-clang
-              RANLIB=$TOOLCHAIN/bin/i686-linux-android-ranlib
-              AR=$TOOLCHAIN/bin/i686-linux-android-ar
-              ;;
-            *)
-              echo "Unsupported ABI: $ABI"
-              exit 1
-              ;;
-          esac
+        ABI="arm64-v8a"
+        ARCH="aarch64"
+        CPU="armv8-a"
 
-          BUILD_DIR="$(pwd)/ffmpeg-build-$ABI"
-          PREFIX="$OUTPUT_ROOT/$ABI"
-          rm -rf "$BUILD_DIR"
-          mkdir -p "$BUILD_DIR"
-          cp -r "$FFMPEG_SRC" "$BUILD_DIR/ffmpeg"
-          cd "$BUILD_DIR/ffmpeg"
+        CC=$TOOLCHAIN/bin/aarch64-linux-android${API}-clang
+        AR=$TOOLCHAIN/bin/aarch64-linux-android-ar
+        RANLIB=$TOOLCHAIN/bin/aarch64-linux-android-ranlib
 
-          # Configure minimal GPL-enabled build (ffmpeg_min_gpl flavor)
-          EXTRA_CFLAGS="-fPIC"
-          EXTRA_LDFLAGS="-Wl,-z,max-page-size=16384"
-          ./configure \
-            --prefix="$PREFIX" \
-            --target-os=android \
-            --arch="$ARCH" \
-            --cpu="$TARGET_CPU" \
-            --enable-cross-compile \
-            --cross-prefix="" \
-            --cc="$CC" \
-            --ar="$AR" \
-            --ranlib="$RANLIB" \
-            --enable-shared \
-            --disable-static \
-            --disable-programs \
-            --disable-doc \
-            --disable-stripping \
-            --enable-gpl \
-            --disable-vulkan \
-            --extra-cflags="$EXTRA_CFLAGS" \
-            --extra-ldflags="$EXTRA_LDFLAGS"
+        mkdir -p ffbuild
+        cp -r ffmpeg-src ffbuild/ffmpeg
+        cd ffbuild/ffmpeg
 
+        ./configure \
+          --prefix="$HOME/ffout/arm64-v8a" \
+          --target-os=android \
+          --arch="$ARCH" \
+          --cpu="$CPU" \
+          --enable-cross-compile \
+          --cc="$CC" \
+          --ar="$AR" \
+          --ranlib="$RANLIB" \
+          --enable-shared \
+          --disable-static \
+          --disable-programs \
+          --disable-doc \
+          --disable-stripping \
+          --enable-gpl \
+          --disable-vulkan \
+          --extra-cflags="-fPIC" \
+          --extra-ldflags="-Wl,-z,max-page-size=16384"
 
-          make -j$(nproc)
-          make install
-          echo "Installed libs for $ABI in $PREFIX/lib"
-        done
-    
-    - name: Copy native libs into ffmpeg-kit Android module
+        make -j$(nproc)
+        make install
+
+    - name: Copy libs into ffmpeg-kit Android module
       run: |
         set -euo pipefail
+        MODULE="ffmpeg-kit/android/ffmpeg-kit-android-lib"
 
-        MODULE_PATH="android/ffmpeg-kit-android-lib"
+        mkdir -p "$MODULE/src/main/jniLibs/arm64-v8a"
+        cp -v $HOME/ffout/arm64-v8a/lib/*.so "$MODULE/src/main/jniLibs/arm64-v8a/"
 
-        echo "Android module found at: $MODULE_PATH"
+        echo "Native libs copied successfully."
 
-        ABIS="${{ github.event.inputs.build_abis }}"
-        if [ -z "$ABIS" ]; then ABIS="arm64-v8a"; fi
-
-        BASE_OUT="$HOME/ffout"
-
-        for ABI in $ABIS; do
-          mkdir -p "$MODULE_PATH/src/main/jniLibs/$ABI"
-          cp "$BASE_OUT/$ABI/lib/"*.so "$MODULE_PATH/src/main/jniLibs/$ABI/" || true
-        done
-
-        echo "Copied native libraries into $MODULE_PATH/src/main/jniLibs/"
-        
-        - name: Build ffmpeg-kit Android AAR
-          run: |
-            cd ffmpeg-kit/android
-    
-            if [ -f "./gradlew" ]; then
-              ./gradlew :ffmpeg-kit-android-lib:assembleRelease --no-daemon --stacktrace
-            else
-              sudo apt install -y gradle
-              gradle :ffmpeg-kit-android-lib:assembleRelease --no-daemon --stacktrace
-            fi        
-
-    - name: Collect AAR and upload
+    - name: Build ffmpeg-kit AAR
       run: |
-        cd ffmpeg-kit
-        # find produced aar
-        AAR_PATH=$(find . -type f -name "*-release.aar" -path "*kit*" -print -quit || true)
-        if [ -z "$AAR_PATH" ]; then
-          # fallback: search broader
-          AAR_PATH=$(find . -type f -name "*-release.aar" -print -quit || true)
-        fi
-        if [ -z "$AAR_PATH" ]; then
-          echo "AAR not found. Listing build outputs:"
-          find . -name "*.aar" -maxdepth 6 -print || true
-          exit 1
-        fi
-        echo "AAR found: $AAR_PATH"
-        cp "$AAR_PATH" /tmp/ffmpeg-kit-min-gpl-16kb.aar
-      shell: bash
+        cd ffmpeg-kit/android
+        chmod +x ./gradlew
+        ./gradlew :ffmpeg-kit-android-lib:assembleRelease --no-daemon --stacktrace
 
-    - name: Upload artifact
+    - name: Upload AAR
       uses: actions/upload-artifact@v4
       with:
         name: ffmpeg-kit-min-gpl-16kb-aar
-        path: /tmp/ffmpeg-kit-min-gpl-16kb.aar
+        path: ffmpeg-kit/android/ffmpeg-kit-android-lib/build/outputs/aar/ffmpeg-kit-android-lib-release.aar
