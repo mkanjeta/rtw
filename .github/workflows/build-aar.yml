@@ -127,6 +127,11 @@ jobs:
         echo "=== jniLibs content ==="
         find "$MODULE/src/main/jniLibs" -type f -print
 
+    - name: Show ffmpeg-kit-android-lib/build.gradle
+      run: |
+        cat ffmpeg-kit/android/ffmpeg-kit-android-lib/build.gradle
+
+
     - name: Build ffmpeg-kit AAR
       run: |
         set -euo pipefail
