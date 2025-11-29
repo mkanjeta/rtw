@@ -114,6 +114,13 @@ jobs:
           # back to repo root
           cd "$(pwd -P)"
         done
+    - name: Check built FFmpeg outputs
+      run: |
+        echo "=== arm64-v8a output ==="
+        ls -la $HOME/ffout/arm64-v8a/lib || true
+
+        echo "=== armeabi-v7a output ==="
+        ls -la $HOME/ffout/armeabi-v7a/lib || true
 
     - name: Copy native libs into ffmpeg-kit Android module
       run: |
