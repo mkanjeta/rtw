@@ -146,14 +146,23 @@ jobs:
     - name: Collect AAR and upload
       run: |
         set -euo pipefail
-        AAR_PATH="ffmpeg-kit/android/ffmpeg-kit-android-lib/build/outputs/aar/ffmpeg-kit-android-lib-release.aar"
-        if [ ! -f "$AAR_PATH" ]; then
-          echo "AAR not found at expected path. Listing outputs directory:"
-          ls -la ffmpeg-kit/android/ffmpeg-kit-android-lib/build/outputs/aar || true
+        OUT_DIR="ffmpeg-kit/android/ffmpeg-kit-android-lib/build/outputs/aar"
+
+        echo "Listing AAR directory:"
+        ls -la "$OUT_DIR"
+
+        # Pick whichever *-release.aar exists
+        AAR_PATH=$(find "$OUT_DIR" -maxdepth 1 -type f -name "*release.aar" | head -n 1)
+
+        if [ -z "$AAR_PATH" ]; then
+          echo "No release AAR found!"
           exit 1
         fi
+
+        echo "Found AAR: $AAR_PATH"
         cp "$AAR_PATH" /tmp/ffmpeg-kit-min-gpl-mobile-16kb.aar
       shell: bash
+
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
