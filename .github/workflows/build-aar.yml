@@ -131,8 +131,10 @@ jobs:
             --disable-doc \
             --disable-stripping \
             --enable-gpl \
+            --disable-vulkan \
             --extra-cflags="$EXTRA_CFLAGS" \
-            --extra-ldflags="$EXTRA_LDFLAGS" || ( echo "configure failed; dumping last 200 lines of config.log"; tail -n 200 ffbuild/config.log || true; exit 1 )
+            --extra-ldflags="$EXTRA_LDFLAGS"
+
 
           make -j$(nproc)
           make install
