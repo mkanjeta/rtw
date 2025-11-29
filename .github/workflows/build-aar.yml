@@ -140,7 +140,12 @@ jobs:
           make install
           echo "Installed libs for $ABI in $PREFIX/lib"
         done
-
+    - name: Debug directory structure
+      run: |
+        cd ffmpeg-kit
+        pwd
+        echo "=== top-level ==="
+        ls -R .
     - name: Copy native libs into ffmpeg-kit Android module
       run: |
         set -euo pipefail
