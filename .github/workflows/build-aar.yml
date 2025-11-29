@@ -140,60 +140,39 @@ jobs:
           make install
           echo "Installed libs for $ABI in $PREFIX/lib"
         done
-    - name: Debug directory structure
-      run: |
-        cd ffmpeg-kit
-        pwd
-        echo "=== top-level ==="
-        ls -R .
-    - name: Copy native libs into ffmpeg-kit Android module
-      run: |
-        set -euo pipefail
-        # try to find android kit module automatically
-        cd ffmpeg-kit
-        # common possible locations for the Android AAR module
-        CANDIDATES="android/kit android/build/androidKit android/android/kit android/android/ffmpeg-kit android/ffmpeg-kit/android"
-        FOUND=""
-        for p in $CANDIDATES; do
-          if [ -d "$p" ]; then
-            FOUND="$p"
-            break
-          fi
-        done
-        # if not found by candidates, search for a module that contains a src/main/jniLibs path
-        if [ -z "$FOUND" ]; then
-          FOUND=$(find . -maxdepth 4 -type d -name "jniLibs" -print -quit || true)
-          if [ -n "$FOUND" ]; then
-            # parent of jniLibs
-            FOUND=$(dirname "$FOUND")
-          fi
-        fi
-        if [ -z "$FOUND" ]; then
-          echo "Could not automatically locate ffmpeg-kit Android module. Please adjust the workflow module path."
-          echo "Searched candidates: $CANDIDATES"
-          exit 1
-        fi
-        echo "Found Android module at: $FOUND"
-        # ensure jniLibs exists for each ABI and copy .so files
-        ABIS="${{ github.event.inputs.build_abis }}"
-        if [ -z "$ABIS" ]; then ABIS="arm64-v8a"; fi
-        BASE_OUT="$HOME/ffout"
-        for ABI in $ABIS; do
-          mkdir -p "$FOUND/src/main/jniLibs/$ABI"
-          cp -v "$BASE_OUT/$ABI/lib/"*.so "$FOUND/src/main/jniLibs/$ABI/" || true
-        done
-        echo "Copied native libs into $FOUND/src/main/jniLibs/"
+    
+        - name: Copy native libs into ffmpeg-kit Android module
+          run: |
+            set -euo pipefail
+    
+            MODULE_PATH="android/ffmpeg-kit-android-lib"
+    
+            echo "Android module found at: $MODULE_PATH"
+    
+            ABIS="${{ github.event.inputs.build_abis }}"
+            if [ -z "$ABIS" ]; then ABIS="arm64-v8a"; fi
+    
+            BASE_OUT="$HOME/ffout"
+    
+            for ABI in $ABIS; do
+              mkdir -p "$MODULE_PATH/src/main/jniLibs/$ABI"
+              cp -v "$BASE_OUT/$ABI/lib/"*.so "$MODULE_PATH/src/main/jniLibs/$ABI/" || true
+            done
+    
+            echo "Copied native libraries into $MODULE_PATH/src/main/jniLibs/"
+    
 
-    - name: Build ffmpeg-kit Android AAR
-      run: |
-        cd ffmpeg-kit
-        # find gradle wrapper or use system gradle
-        if [ -f "./gradlew" ]; then
-          ./gradlew :kit:assembleRelease --no-daemon --stacktrace || ./gradlew assembleRelease --no-daemon --stacktrace
-        else
-          sudo apt install -y gradle
-          gradle :kit:assembleRelease --no-daemon --stacktrace || gradle assembleRelease --no-daemon --stacktrace
-        fi
+        - name: Build ffmpeg-kit Android AAR
+          run: |
+            cd ffmpeg-kit/android
+    
+            if [ -f "./gradlew" ]; then
+              ./gradlew :ffmpeg-kit-android-lib:assembleRelease --no-daemon --stacktrace
+            else
+              sudo apt install -y gradle
+              gradle :ffmpeg-kit-android-lib:assembleRelease --no-daemon --stacktrace
+            fi
+
 
     - name: Collect AAR and upload
       run: |
