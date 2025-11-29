@@ -114,19 +114,20 @@ jobs:
       run: |
         set -euo pipefail
         MODULE="ffmpeg-kit/android/ffmpeg-kit-android-lib"
+        LIBROOT="ffmpeg-kit/android/libs"
 
-        echo "Module path: $MODULE"
-        ls -la ffmpeg-kit/android
+        echo "Module: $MODULE"
+        echo "Libroot: $LIBROOT"
 
-        mkdir -p "$MODULE/src/main/jniLibs/arm64-v8a"
-        mkdir -p "$MODULE/src/main/jniLibs/armeabi-v7a"
+        mkdir -p "$LIBROOT/arm64-v8a"
+        mkdir -p "$LIBROOT/armeabi-v7a"
 
-        cp -v "$HOME/ffout/arm64-v8a/lib/"*.so "$MODULE/src/main/jniLibs/arm64-v8a/"
-        cp -v "$HOME/ffout/armeabi-v7a/lib/"*.so "$MODULE/src/main/jniLibs/armeabi-v7a/"
+        cp -v "$HOME/ffout/arm64-v8a/lib/"*.so "$LIBROOT/arm64-v8a/"
+        cp -v "$HOME/ffout/armeabi-v7a/lib/"*.so "$LIBROOT/armeabi-v7a/"
 
-        echo "=== jniLibs content ==="
-        find "$MODULE/src/main/jniLibs" -type f -print
-
+        echo "=== libs content ==="
+        find "$LIBROOT" -type f -print
+        
     - name: Show ffmpeg-kit-android-lib/build.gradle
       run: |
         cat ffmpeg-kit/android/ffmpeg-kit-android-lib/build.gradle
