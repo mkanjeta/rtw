@@ -1,4 +1,4 @@
-name: Build ffmpeg-kit (ffmpeg_min_gpl LTS) AAR — Mobile ABIs (arm64 + armv7)
+name: Build ffmpeg-kit (ffmpeg_min_gpl LTS) — Mobile ABIs (arm64 + armv7)
 
 on:
   workflow_dispatch:
@@ -13,7 +13,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Install system packages
+
+    - name: Install required tools
       run: |
         sudo apt update
         sudo apt install -y yasm nasm unzip git build-essential pkg-config automake autoconf libtool openjdk-17-jdk zip python3
@@ -31,14 +32,14 @@ jobs:
         cd ffmpeg-kit
         git submodule update --init --recursive || true
 
-    - name: Clone FFmpeg (LTS tag)
+    - name: Clone FFmpeg LTS
       run: |
         TAG="${{ github.event.inputs.ffmpeg_tag }}"
         if [ -z "$TAG" ]; then TAG="n6.0"; fi
         echo "Using FFmpeg tag: $TAG"
         git clone --depth 1 --branch "$TAG" https://github.com/FFmpeg/FFmpeg ffmpeg-src
 
-    - name: Build FFmpeg for arm64-v8a and armeabi-v7a (16KB aligned)
+    - name: Build FFmpeg (arm64-v8a + armeabi-v7a)
       run: |
         set -euo pipefail
 
@@ -62,37 +63,29 @@ jobs:
             AR="$TOOLCHAIN/bin/aarch64-linux-android-ar"
             RANLIB="$TOOLCHAIN/bin/aarch64-linux-android-ranlib"
             EXTRA_CFLAGS="-fPIC"
+
           elif [ "$ABI" = "armeabi-v7a" ]; then
             ARCH=arm
             CPU=armv7-a
-            # Use armv7a clang wrapper (NDK provides armv7a-linux-androideabi<API>-clang)
             CC="$TOOLCHAIN/bin/armv7a-linux-androideabi${API}-clang"
-            # ranlib/ar may be the generic arm toolchain name
             AR="$TOOLCHAIN/bin/arm-linux-androideabi-ar"
             RANLIB="$TOOLCHAIN/bin/arm-linux-androideabi-ranlib"
             EXTRA_CFLAGS="-fPIC -mfloat-abi=softfp -mfpu=neon -march=armv7-a"
-          else
-            echo "Unsupported ABI $ABI"
-            exit 1
           fi
 
-          BUILD_DIR="$(pwd)/ffbuild-$ABI"
+          BUILD_DIR="$(pwd)/ffmpeg-build-$ABI"
           PREFIX="$OUT_ROOT/$ABI"
           rm -rf "$BUILD_DIR"
           mkdir -p "$BUILD_DIR"
           cp -r "$FFMPEG_SRC" "$BUILD_DIR/ffmpeg"
           cd "$BUILD_DIR/ffmpeg"
 
-          EXTRA_LDFLAGS="-Wl,-z,max-page-size=16384"
-
-          echo "Configuring FFmpeg for $ABI..."
           ./configure \
             --prefix="$PREFIX" \
             --target-os=android \
             --arch="$ARCH" \
             --cpu="$CPU" \
             --enable-cross-compile \
-            --cross-prefix="" \
             --cc="$CC" \
             --ar="$AR" \
             --ranlib="$RANLIB" \
@@ -104,79 +97,45 @@ jobs:
             --enable-gpl \
             --disable-vulkan \
             --extra-cflags="$EXTRA_CFLAGS" \
-            --extra-ldflags="$EXTRA_LDFLAGS" || ( echo "FFmpeg configure failed for $ABI"; tail -n 200 ffbuild/config.log || true; exit 1 )
+            --extra-ldflags="-Wl,-z,max-page-size=16384"
 
-          echo "Building FFmpeg for $ABI..."
           make -j$(nproc)
           make install
-          echo "Installed libs for $ABI in $PREFIX/lib"
-
-          # back to repo root
-          cd "$(pwd -P)"
+          cd "$(pwd -P)/../../"
         done
-    - name: Check built FFmpeg outputs
-      run: |
+
+        echo "=== Done building FFmpeg ==="
         echo "=== arm64-v8a output ==="
-        ls -la $HOME/ffout/arm64-v8a/lib || true
-
+        ls -la $HOME/ffout/arm64-v8a/lib
         echo "=== armeabi-v7a output ==="
-        ls -la $HOME/ffout/armeabi-v7a/lib || true
+        ls -la $HOME/ffout/armeabi-v7a/lib
 
-    - name: Copy native libs into ffmpeg-kit Android module
+    - name: Copy native libs into ffmpeg-kit module
       run: |
         set -euo pipefail
-        MODULE="ffmpeg-kit-android/ffmpeg-kit-android-lib"
-        echo "Android module: $MODULE"
+        MODULE="ffmpeg-kit/android/ffmpeg-kit-android-lib"
 
-        # Ensure module exists
-        if [ ! -d "$MODULE" ]; then
-          echo "Module path $MODULE not found. Listing ffmpeg-kit/android:"
-          ls -la ffmpeg-kit/android || true
-          exit 1
-        fi
+        echo "Module path: $MODULE"
+        ls -la ffmpeg-kit/android
 
-        # Copy libs for each ABI
-        for ABI in arm64-v8a armeabi-v7a; do
-          mkdir -p "$MODULE/src/main/jniLibs/$ABI"
-          cp -v "$HOME/ffout/$ABI/lib/"*.so "$MODULE/src/main/jniLibs/$ABI/" || true
-        done
+        mkdir -p "$MODULE/src/main/jniLibs/arm64-v8a"
+        mkdir -p "$MODULE/src/main/jniLibs/armeabi-v7a"
 
-        echo "Copied native libs into $MODULE/src/main/jniLibs/"
+        cp -v "$HOME/ffout/arm64-v8a/lib/"*.so "$MODULE/src/main/jniLibs/arm64-v8a/"
+        cp -v "$HOME/ffout/armeabi-v7a/lib/"*.so "$MODULE/src/main/jniLibs/armeabi-v7a/"
 
-    - name: Build ffmpeg-kit Android AAR
+        echo "=== jniLibs content ==="
+        find "$MODULE/src/main/jniLibs" -type f -print
+
+    - name: Build ffmpeg-kit AAR
       run: |
         set -euo pipefail
         cd ffmpeg-kit/android
-        chmod +x ./gradlew
+        chmod +x gradlew
         ./gradlew :ffmpeg-kit-android-lib:assembleRelease --no-daemon --stacktrace
-    - name: Debug Gradle modules
-      run: |
-        cd ffmpeg-kit/android
-        ./gradlew projects
 
-    - name: Collect AAR and upload
-      run: |
-        set -euo pipefail
-        OUT_DIR="ffmpeg-kit/android/ffmpeg-kit-android-lib/build/outputs/aar"
-
-        echo "Listing AAR directory:"
-        ls -la "$OUT_DIR"
-
-        # Pick whichever *-release.aar exists
-        AAR_PATH=$(find "$OUT_DIR" -maxdepth 1 -type f -name "*release.aar" | head -n 1)
-
-        if [ -z "$AAR_PATH" ]; then
-          echo "No release AAR found!"
-          exit 1
-        fi
-
-        echo "Found AAR: $AAR_PATH"
-        cp "$AAR_PATH" /tmp/ffmpeg-kit-min-gpl-mobile-16kb.aar
-      shell: bash
-
-
-    - name: Upload artifact
+    - name: Upload AAR
       uses: actions/upload-artifact@v4
       with:
         name: ffmpeg-kit-min-gpl-mobile-16kb-aar
-        path: /tmp/ffmpeg-kit-min-gpl-mobile-16kb.aar
+        path: ffmpeg-kit/android/ffmpeg-kit-android-lib/build/outputs/aar/ffmpeg-kit-release.aar
