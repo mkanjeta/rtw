@@ -125,7 +125,7 @@ jobs:
     - name: Copy native libs into ffmpeg-kit Android module
       run: |
         set -euo pipefail
-        MODULE="ffmpeg-kit/android/ffmpeg-kit-android-lib"
+        MODULE="ffmpeg-kit-android/ffmpeg-kit-android-lib"
         echo "Android module: $MODULE"
 
         # Ensure module exists
