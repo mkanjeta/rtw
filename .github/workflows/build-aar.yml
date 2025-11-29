@@ -149,6 +149,10 @@ jobs:
         cd ffmpeg-kit/android
         chmod +x ./gradlew
         ./gradlew :ffmpeg-kit-android-lib:assembleRelease --no-daemon --stacktrace
+    - name: Debug Gradle modules
+      run: |
+        cd ffmpeg-kit/android
+        ./gradlew projects
 
     - name: Collect AAR and upload
       run: |
