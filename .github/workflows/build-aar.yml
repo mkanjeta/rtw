@@ -52,31 +52,82 @@ jobs:
         sed -i "1a export EXTRA_LDFLAGS=\"\$EXTRA_LDFLAGS $FLAG\"" ffmpeg-kit/android.sh
         sed -i "1a export FFMPEG_EXTRA_LDFLAGS=\"\$FFMPEG_EXTRA_LDFLAGS $FLAG\"" ffmpeg-kit/android.sh
 
-    - name: Build ffmpeg-kit LTS native libs
+    - name: Prepare NDK cpufeatures + build ffmpeg-kit (fix cpu-features)
       run: |
-        set -e
+        set -euo pipefail
         cd ffmpeg-kit
-
+    
+        # explicit NDK (use r21e; change if you installed elsewhere)
         export ANDROID_NDK_ROOT="$HOME/ndk/android-ndk-r21e"
+        export ANDROID_NDK_HOME="$ANDROID_NDK_ROOT"
+        export NDK_HOME="$ANDROID_NDK_ROOT"
         export PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
-
+    
+        echo "NDK root: $ANDROID_NDK_ROOT"
+        ls -la "$ANDROID_NDK_ROOT" | sed -n '1,120p' || true
+    
+        # 1) Remove ffmpeg-kit's downloaded cpu-features (if any)
+        if [ -d src/cpu-features ]; then
+          echo "Removing bundled cpu-features..."
+          rm -rf src/cpu-features
+        fi
+    
+        # 2) Copy cpufeatures from NDK to ffmpeg-kit src
+        echo "Copying NDK cpufeatures into ffmpeg-kit/src/cpu-features ..."
+        cp -r "$ANDROID_NDK_ROOT/sources/android/cpufeatures" src/cpu-features
+        # confirm files
+        ls -la src/cpu-features || true
+    
+        # 3) Ensure ndk-build is accessible and executable
+        ls -la "$ANDROID_NDK_ROOT/ndk-build" || true
+        chmod +x "$ANDROID_NDK_ROOT/ndk-build" || true
+    
+        # 4) Inject 16KB page-size into environment so all child builds inherit it
+        PAGEFLAG='-Wl,-z,max-page-size=16384'
+        export LDFLAGS="${LDFLAGS:-} $PAGEFLAG"
+        export EXTRA_LDFLAGS="${EXTRA_LDFLAGS:-} $PAGEFLAG"
+        export FFMPEG_EXTRA_LDFLAGS="${FFMPEG_EXTRA_LDFLAGS:-} $PAGEFLAG"
+        echo "Injected LDFLAGS=$LDFLAGS"
+    
+        # 5) Run android.sh but capture everything to files so we can inspect
         set +e
+        FFMPEG_SOURCE_DIR="$(pwd)/prebuilt/ffmpeg" \
         ./android.sh \
           --lts \
           --enable-gpl \
           --disable-x86 \
           --disable-x86-64 \
+          --disable-arm-v7a-neon \
           --no-ffmpeg-kit-protocols \
-          2>&1 | tee android-build.log
-        CODE=$?
+          2>&1 | tee android-sh-output.txt
+        RET=$?
         set -e
-
-        cp android-build.log ../android-build.log
-
-        if [ $CODE -ne 0 ]; then
-          echo "Native build failed"
-          exit 1
+    
+        echo "android.sh exit code: $RET"
+        echo "----- tail android-sh-output.txt -----"
+        tail -n 300 android-sh-output.txt || true
+    
+        # 6) Collect build.log(s) and cpufeatures ndk-build output if present
+        mkdir -p ../artifacts || true
+        cp android-sh-output.txt ../artifacts/android-sh-output.txt || true
+    
+        if [ -f build.log ]; then
+          cp build.log ../artifacts/build.log || true
+          echo "Saved build.log"
+        else
+          echo "No top-level build.log; searching..."
+          find . -type f -name build.log -print -exec sh -c 'mkdir -p ../artifacts/$(dirname "{}") && cp "{}" "../artifacts/{}"' \; || true
         fi
+    
+        # Run ndk-build manually in cpufeatures to capture raw output (non-fatal)
+        CPUF_SRC="$ANDROID_NDK_ROOT/sources/android/cpufeatures"
+        if [ -d "$CPUF_SRC" ]; then
+          echo "Running cpufeatures ndk-build directly for debug..."
+          (cd "$CPUF_SRC" && "$ANDROID_NDK_ROOT/ndk-build" V=1) > ../artifacts/cpufeatures-ndk-build.txt 2>&1 || true
+        fi
+    
+        # 7) Exit with android.sh result so job reflects success/fail
+        exit $RET
 
     - name: Build AAR
       run: |
