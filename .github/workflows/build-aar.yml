@@ -17,6 +17,7 @@ jobs:
       NDK_ZIP_URL: "https://dl.google.com/android/repository/android-ndk-r26d-linux.zip"
 
     steps:
+
       - name: Install dependencies
         run: |
           sudo apt update
@@ -38,6 +39,8 @@ jobs:
           curl -L -o ndk.zip "$NDK_ZIP_URL"
           unzip -q ndk.zip -d $HOME
           mv $HOME/android-ndk-*/* $HOME/ndk/
+          echo "ndk.dir=$HOME/ndk" > ffmpeg-kit/android/local.properties
+          echo "sdk.dir=${ANDROID_SDK_ROOT}" >> ffmpeg-kit/android/local.properties
 
       - name: Clone ffmpeg-kit
         run: |
@@ -51,7 +54,7 @@ jobs:
           if [ -z "$TAG" ]; then TAG="n6.0"; fi
           git clone --depth 1 --branch "$TAG" https://github.com/FFmpeg/FFmpeg ffmpeg-kit/ffmpeg
 
-      - name: Build ffmpeg-kit with 16KB alignment
+      - name: Build ffmpeg-kit with 16KB page alignment
         run: |
           cd ffmpeg-kit
           chmod +x android.sh
@@ -59,7 +62,7 @@ jobs:
           export ANDROID_HOME="${ANDROID_SDK_ROOT}"
           export PATH="$HOME/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
           export EXTRA_LDFLAGS="-Wl,-z,max-page-size=16384"
-          ./android.sh --enable-gpl --api-21 --android-abis="arm64-v8a armeabi-v7a"
+          ./android.sh --enable-gpl --enable-arm64-v8a --enable-arm-v7a --disable-x86 --disable-x86-64
 
       - name: Build AAR
         run: |
