@@ -45,18 +45,18 @@ jobs:
       run: |
         set -e
         cd ffmpeg-kit
-
+    
         export ANDROID_NDK_ROOT="$HOME/ndk/android-ndk-r26d"
-        
-        
+        export FFMPEG_SOURCE_DIR="$(pwd)/prebuilt/ffmpeg"
+    
         ./android.sh \
           --lts \
           --enable-gpl \
           --disable-x86 \
           --disable-x86-64 \
           --disable-arm-v7a-neon \
-          --no-ffmpeg-kit-protocols \
-          --disable-vulkan
+          --no-ffmpeg-kit-protocols
+
 
 
     - name: Upload AAR
