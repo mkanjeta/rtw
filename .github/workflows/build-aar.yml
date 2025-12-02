@@ -1,168 +1,177 @@
-name: Build ffmpeg-kit (LTS) – arm64 + armv7 – 16KB Pagesize
+name: Build ffmpeg-kit v5 (AAR) — arm64 + armv7, 16KB pagesize
 
 on:
   workflow_dispatch:
+    inputs:
+      ffmpeg_tag:
+        description: "FFmpeg tag to use (LTS e.g. n6.0). If empty, ffmpeg-kit will build bundled FFmpeg."
+        required: false
+        default: ""
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 200
+    timeout-minutes: 300
 
     steps:
-    - name: Install dependencies
+    - name: Install build tools
       run: |
         sudo apt update
         sudo apt install -y \
           build-essential yasm nasm cmake git \
           autoconf automake libtool pkg-config unzip \
-          openjdk-17-jdk python3
+          openjdk-17-jdk zip python3 wget
 
-    - name: Download Android NDK r21e (API 16 compatible)
+    - name: Download Android NDK r25c
       run: |
-        mkdir -p $HOME/ndk
-        wget -q https://dl.google.com/android/repository/android-ndk-r21e-linux-x86_64.zip -O ndk.zip
+        mkdir -p "$HOME/ndk"
+        wget -q https://dl.google.com/android/repository/android-ndk-r25c-linux.zip -O ndk.zip
         unzip -q ndk.zip
-        mv android-ndk-r21e $HOME/ndk/
+        mv android-ndk-r25c "$HOME/ndk/"
 
-    - name: Clone ffmpeg-kit
+    - name: Clone ffmpeg-kit (v5 / master)
       run: |
         git clone https://github.com/arthenica/ffmpeg-kit ffmpeg-kit
         cd ffmpeg-kit
-        git submodule update --init --recursive
+        git submodule update --init --recursive || true
 
-    - name: Force-use NDK cpufeatures (disable git download)
+    - name: Optionally clone FFmpeg tag to use (optional)
       run: |
-        set -e
-        cd ffmpeg-kit
-    
-        CPU_DIR="src/cpu-features"
-        NDK_CPU_DIR="$HOME/ndk/android-ndk-r21e/sources/android/cpufeatures"
-    
-        echo "Replacing ffmpeg-kit cpu-features with NDK version..."
-        rm -rf "$CPU_DIR"
-        mkdir -p src
-        cp -r "$NDK_CPU_DIR" "$CPU_DIR"
-    
-        # Patch function-android.sh to disable cpu-features git clone
-        sed -i '/cpu-features/,/fi/{/download_library_source/s/^/#/}' scripts/function-android.sh
-    
-        echo "Patched ffmpeg-kit to use NDK cpu-features only"
-
-
-    - name: Patch cpu-features CMakeLists for modern CMake
-      run: |
-        set -e
-        CPUF="ffmpeg-kit/src/cpu-features"
-
-        if [ -f "$CPUF/CMakeLists.txt" ]; then
-          echo "Patching cpu-features CMakeLists.txt..."
-          # Force minimum cmake version
-          sed -i '1s/.*/cmake_minimum_required(VERSION 3.5)/' "$CPUF/CMakeLists.txt"
-
-          # Remove old policy version lines
-          sed -i '/CMAKE_POLICY_VERSION/d' "$CPUF/CMakeLists.txt"
+        TAG="${{ github.event.inputs.ffmpeg_tag }}"
+        if [ -n "$TAG" ]; then
+          echo "Custom FFmpeg tag provided: $TAG — using as prebuilt override"
+          mkdir -p ffmpeg-kit/prebuilt
+          git clone --depth 1 --branch "$TAG" https://github.com/FFmpeg/FFmpeg ffmpeg-kit/prebuilt/ffmpeg
+        else
+          echo "No custom FFmpeg tag provided — android.sh will build the default FFmpeg."
         fi
 
-    - name: Inject 16KB page-size flags into ffmpeg-kit scripts
-      run: |
-        FLAG="-Wl,-z,max-page-size=16384"
-
-        sed -i "1a export LDFLAGS=\"\$LDFLAGS $FLAG\"" ffmpeg-kit/android.sh
-        sed -i "1a export EXTRA_LDFLAGS=\"\$EXTRA_LDFLAGS $FLAG\"" ffmpeg-kit/android.sh
-        sed -i "1a export FFMPEG_EXTRA_LDFLAGS=\"\$FFMPEG_EXTRA_LDFLAGS $FLAG\"" ffmpeg-kit/android.sh
-
-    - name: Prepare NDK cpufeatures + build ffmpeg-kit (fix cpu-features)
+    - name: Inject 16KB page-size flags into android.sh and env
       run: |
         set -euo pipefail
         cd ffmpeg-kit
-    
-        # explicit NDK (use r21e; change if you installed elsewhere)
-        export ANDROID_NDK_ROOT="$HOME/ndk/android-ndk-r21e"
+        PAGEFLAG='-Wl,-z,max-page-size=16384'
+        # Export so child processes inherit it
+        echo "export LDFLAGS=\"\${LDFLAGS} $PAGEFLAG\"" >> android.sh.env
+        echo "export EXTRA_LDFLAGS=\"\${EXTRA_LDFLAGS} $PAGEFLAG\"" >> android.sh.env
+        echo "export FFMPEG_EXTRA_LDFLAGS=\"\${FFMPEG_EXTRA_LDFLAGS} $PAGEFLAG\"" >> android.sh.env
+        # We'll source android.sh.env prior to calling android.sh
+
+    - name: Probe android.sh --help and build with best-matching invocation
+      env:
+        ANDROID_NDK_ROOT: ${{ runner.temp }}/ndk-placeholder  # placeholder; overwritten below
+      run: |
+        set -euo pipefail
+        cd ffmpeg-kit
+
+        # set explicit NDK env (r25c)
+        export ANDROID_NDK_ROOT="$HOME/ndk/android-ndk-r25c"
         export ANDROID_NDK_HOME="$ANDROID_NDK_ROOT"
         export NDK_HOME="$ANDROID_NDK_ROOT"
         export PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
-    
-        echo "NDK root: $ANDROID_NDK_ROOT"
-        ls -la "$ANDROID_NDK_ROOT" | sed -n '1,120p' || true
-    
-        # 1) Remove ffmpeg-kit's downloaded cpu-features (if any)
-        if [ -d src/cpu-features ]; then
-          echo "Removing bundled cpu-features..."
-          rm -rf src/cpu-features
-        fi
-    
-        # 2) Copy cpufeatures from NDK to ffmpeg-kit src
-        echo "Copying NDK cpufeatures into ffmpeg-kit/src/cpu-features ..."
-        cp -r "$ANDROID_NDK_ROOT/sources/android/cpufeatures" src/cpu-features
-        # confirm files
-        ls -la src/cpu-features || true
-    
-        # 3) Ensure ndk-build is accessible and executable
-        ls -la "$ANDROID_NDK_ROOT/ndk-build" || true
-        chmod +x "$ANDROID_NDK_ROOT/ndk-build" || true
-    
-        # 4) Inject 16KB page-size into environment so all child builds inherit it
-        PAGEFLAG='-Wl,-z,max-page-size=16384'
-        export LDFLAGS="${LDFLAGS:-} $PAGEFLAG"
-        export EXTRA_LDFLAGS="${EXTRA_LDFLAGS:-} $PAGEFLAG"
-        export FFMPEG_EXTRA_LDFLAGS="${FFMPEG_EXTRA_LDFLAGS:-} $PAGEFLAG"
-        echo "Injected LDFLAGS=$LDFLAGS"
-    
-        # 5) Run android.sh but capture everything to files so we can inspect
-        set +e
-        FFMPEG_SOURCE_DIR="$(pwd)/prebuilt/ffmpeg" \
-        ./android.sh \
-          --lts \
-          --enable-gpl \
-          --disable-x86 \
-          --disable-x86-64 \
-          --disable-arm-v7a-neon \
-          --no-ffmpeg-kit-protocols \
-          2>&1 | tee android-sh-output.txt
-        RET=$?
-        set -e
-    
-        echo "android.sh exit code: $RET"
-        echo "----- tail android-sh-output.txt -----"
-        tail -n 300 android-sh-output.txt || true
-    
-        # 6) Collect build.log(s) and cpufeatures ndk-build output if present
-        mkdir -p ../artifacts || true
-        cp android-sh-output.txt ../artifacts/android-sh-output.txt || true
-    
-        if [ -f build.log ]; then
-          cp build.log ../artifacts/build.log || true
-          echo "Saved build.log"
-        else
-          echo "No top-level build.log; searching..."
-          find . -type f -name build.log -print -exec sh -c 'mkdir -p ../artifacts/$(dirname "{}") && cp "{}" "../artifacts/{}"' \; || true
-        fi
-    
-        # Run ndk-build manually in cpufeatures to capture raw output (non-fatal)
-        CPUF_SRC="$ANDROID_NDK_ROOT/sources/android/cpufeatures"
-        if [ -d "$CPUF_SRC" ]; then
-          echo "Running cpufeatures ndk-build directly for debug..."
-          (cd "$CPUF_SRC" && "$ANDROID_NDK_ROOT/ndk-build" V=1) > ../artifacts/cpufeatures-ndk-build.txt 2>&1 || true
-        fi
-    
-        # 7) Exit with android.sh result so job reflects success/fail
-        exit $RET
 
-    - name: Build AAR
+        # make sure NDK exists
+        if [ ! -d "$ANDROID_NDK_ROOT" ]; then
+          echo "ERROR: NDK not found at $ANDROID_NDK_ROOT"
+          exit 1
+        fi
+
+        # Source our page-size env file for LDFLAGS
+        # (we will also export them explicitly so android.sh picks them up)
+        if [ -f android.sh.env ]; then
+          source android.sh.env
+          export LDFLAGS EXTRA_LDFLAGS FFMPEG_EXTRA_LDFLAGS
+          echo "Injected LDFLAGS: $LDFLAGS"
+        fi
+
+        # Save helper output
+        ./android.sh --help > android-sh-help.txt 2>&1 || true
+        tail -n +1 android-sh-help.txt | sed -n '1,200p'
+
+        HELP=$(cat android-sh-help.txt || true)
+        echo "---- parsing android.sh --help for supported flags ----"
+        echo "$HELP" | sed -n '1,120p'
+
+        # We'll attempt a sequence of build invocations; first that succeeds wins.
+        TRY_CMD=""
+        # Preference order (modern ffmpeg-kit v5 first)
+        if echo "$HELP" | grep -q -- '--min-gpl'; then
+          TRY_CMD="./android.sh --min-gpl --disable-x86 --disable-x86-64 --disable-arm-v7a-neon --no-ffmpeg-kit-protocols"
+        elif echo "$HELP" | grep -q -- '--min'; then
+          TRY_CMD="./android.sh --min --disable-x86 --disable-x86-64 --disable-arm-v7a-neon --no-ffmpeg-kit-protocols"
+        elif echo "$HELP" | grep -q -- '--full-gpl'; then
+          # older style: use flavor 'full' and enable gpl flag if necessary
+          TRY_CMD="./android.sh full --enable-gpl --disable-x86 --disable-x86-64 --no-ffmpeg-kit-protocols"
+        else
+          # fallback, best-effort older style (positional or option-based)
+          TRY_CMD="./android.sh --enable-gpl --disable-x86 --disable-x86-64 --disable-arm-v7a-neon --no-ffmpeg-kit-protocols"
+        fi
+
+        echo "Selected build command (trial): $TRY_CMD"
+
+        # Run selected command and capture output; if fails, try some common alternates.
+        attempt() {
+          echo "=== Running: $1 ==="
+          set +e
+          # Ensure environment variables passed into android.sh child processes
+          export LDFLAGS EXTRA_LDFLAGS FFMPEG_EXTRA_LDFLAGS
+          FFMPEG_SOURCE_DIR="$(pwd)/prebuilt/ffmpeg" $1 2>&1 | tee android-sh-output.txt
+          RC=${PIPESTATUS[0]:-0}
+          set -e
+          echo "Command RC=$RC"
+          return $RC
+        }
+
+        # Try the primary
+        if attempt "$TRY_CMD"; then
+          echo "Build command succeeded: $TRY_CMD"
+          BUILD_OK=1
+        else
+          echo "Primary command failed, trying alternates..."
+          BUILD_OK=0
+          # alternates: variant invocations
+          ALTS=(
+            "./android.sh --min-gpl --no-ffmpeg-kit-protocols"
+            "./android.sh --min --no-ffmpeg-kit-protocols"
+            "./android.sh full --enable-gpl --no-ffmpeg-kit-protocols"
+            "./android.sh --enable-gpl --no-ffmpeg-kit-protocols"
+            "./android.sh --lts --enable-gpl --no-ffmpeg-kit-protocols"
+          )
+          for cmd in "${ALTS[@]}"; do
+            if attempt "$cmd"; then
+              echo "Alternate command succeeded: $cmd"
+              BUILD_OK=1
+              break
+            fi
+          done
+        fi
+
+        # Save outputs for artifacts
+        mkdir -p ../artifacts || true
+        cp android-sh-output.txt ../artifacts/ || true
+        cp android-sh-help.txt ../artifacts/ || true
+
+        if [ "${BUILD_OK:-0}" -ne 1 ]; then
+          echo "All build attempts failed. See artifacts/android-sh-output.txt and android-sh-help.txt"
+          # Save build.log if any
+          find . -type f -name build.log -print -exec cp {} ../artifacts/ \; || true
+          exit 1
+        fi
+
+        echo "Native build completed (android.sh)."
+
+    - name: Build AAR via Gradle (if native succeeded)
       run: |
+        set -euo pipefail
         cd ffmpeg-kit/android
         chmod +x gradlew
-        ./gradlew :ffmpeg-kit-android-lib:assembleRelease --no-daemon --stacktrace
+        ./gradlew :ffmpeg-kit-android-lib:assembleRelease --no-daemon --stacktrace 2>&1 | tee ../artifacts/gradle-build.txt
 
-    - name: Upload AAR
-      uses: actions/upload-artifact@v4
-      with:
-        name: ffmpeg-kit-lts-aar
-        path: ffmpeg-kit/android/ffmpeg-kit-android-lib/build/outputs/aar/*.aar
-
-    - name: Upload logs
+    - name: Upload artifacts and AAR
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: logs
-        path: android-build.log
+        name: ffmpeg-kit-v5-build
+        path: |
+          artifacts/**
+          ffmpeg-kit/android/ffmpeg-kit-android-lib/build/outputs/aar/*.aar
