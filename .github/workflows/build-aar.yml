@@ -1,4 +1,4 @@
-name: Build ffmpeg-kit LTS (Debug cpu-features)
+name: Build ffmpeg-kit LTS (patched cpu-features)
 
 on:
   workflow_dispatch:
@@ -11,14 +11,13 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
 
     - name: Install required tools
       run: |
         sudo apt update
         sudo apt install -y yasm nasm unzip git build-essential automake autoconf \
-          libtool pkg-config openjdk-17-jdk python3
+          libtool pkg-config openjdk-17-jdk python3 cmake
 
     - name: Download Android NDK r25c
       run: |
@@ -31,19 +30,54 @@ jobs:
       run: |
         git clone https://github.com/arthenica/ffmpeg-kit ffmpeg-kit
         cd ffmpeg-kit
-        git submodule update --init --recursive || true
+        # ensure submodules are fetched; fail early if this fails
+        git submodule update --init --recursive
 
     - name: Clone FFmpeg LTS source
       run: |
         TAG="${{ github.event.inputs.ffmpeg_tag }}"
-        if [ -z "$TAG" ]; then TAG="n6.0"; fi
-        mkdir ffmpeg-kit/prebuilt
+        [ -z "$TAG" ] && TAG="n6.0"
+        mkdir -p ffmpeg-kit/prebuilt
         git clone --depth 1 --branch "$TAG" https://github.com/FFmpeg/FFmpeg ffmpeg-kit/prebuilt/ffmpeg
 
-    - name: Debug build (capture cpu-features errors)
+    - name: Patch cpu-features CMakeLists for modern CMake
       run: |
         set -euo pipefail
+        cd ffmpeg-kit
 
+        CPUF_SRC="src/cpu-features"
+        CMAKEFILE="$CPUF_SRC/CMakeLists.txt"
+
+        if [ -f "$CMAKEFILE" ]; then
+          echo "Found $CMAKEFILE — patching to require modern CMake (>=3.5)"
+          # If file already contains cmake_minimum_required, replace its VERSION with 3.5
+          # Otherwise, insert cmake_minimum_required(VERSION 3.5) at top.
+          if grep -q "cmake_minimum_required" "$CMAKEFILE"; then
+            # replace first cmake_minimum_required line with a modern version
+            awk 'BEGIN{patched=0}
+              {
+                if(!patched && tolower($0) ~ /cmake_minimum_required/){
+                  print "cmake_minimum_required(VERSION 3.5)"
+                  patched=1
+                } else {
+                  print $0
+                }
+              }
+            ' "$CMAKEFILE" > "$CMAKEFILE.patched" && mv "$CMAKEFILE.patched" "$CMAKEFILE"
+          else
+            # insert a modern cmake_minimum_required at top
+            sed -i '1i cmake_minimum_required(VERSION 3.5)\n' "$CMAKEFILE"
+          fi
+
+          echo "Patched — head of $CMAKEFILE:"
+          sed -n '1,40p' "$CMAKEFILE" || true
+        else
+          echo "Warning: $CMAKEFILE not present (unexpected). Skipping patch."
+        fi
+
+    - name: Run android.sh build (LTS, GPL, armv7 + arm64) and capture logs
+      run: |
+        set -euo pipefail
         cd ffmpeg-kit
 
         export ANDROID_NDK_ROOT="$HOME/ndk/android-ndk-r25c"
@@ -51,18 +85,11 @@ jobs:
         export NDK_HOME="$ANDROID_NDK_ROOT"
         export PATH="$ANDROID_NDK_ROOT:$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
 
-        echo "===== VERIFY NDK PATH ====="
-        echo "NDK: $ANDROID_NDK_ROOT"
+        echo "NDK path: $ANDROID_NDK_ROOT"
         ls -la "$ANDROID_NDK_ROOT" || true
-        echo "===== NDK android sources ====="
         ls -la "$ANDROID_NDK_ROOT/sources/android" || true
 
-        echo "===== Check ndk-build ====="
-        ls -la "$ANDROID_NDK_ROOT/ndk-build" || true
-
-        chmod -R a+rX "$ANDROID_NDK_ROOT"
-
-        echo "===== STARTING ANDROID.SH ====="
+        # run android.sh and capture full output
         set +e
         FFMPEG_SOURCE_DIR="$(pwd)/prebuilt/ffmpeg" \
         ./android.sh \
@@ -76,40 +103,37 @@ jobs:
         EXITCODE=$?
         set -e
 
-        echo "===== android.sh exit code: $EXITCODE ====="
-        echo "===== tail of android-sh-output.txt ====="
-        tail -n 200 android-sh-output.txt || true
+        echo "android.sh exit code: $EXITCODE"
 
-        echo "===== FINDING build.log ====="
+        # Save build log(s)
         if [ -f build.log ]; then
-          echo "build.log found at ffmpeg-kit/build.log"
-          tail -n 400 build.log
+          echo "build.log found — copying to artifacts dir"
+          mkdir -p ../artifacts
+          cp build.log ../artifacts/build.log
         else
-          echo "Searching recursively:"
-          find . -type f -name build.log -print -exec tail -n 200 {} \; || true
+          echo "No build.log at top-level; searching recursively..."
+          find . -type f -name build.log -print -exec sh -c 'mkdir -p ../artifacts/$(dirname "{}") && cp "{}" "../artifacts/{}"' \;
         fi
 
-        echo "===== TESTING cpufeatures manually ====="
+        # always copy android.sh stdout captured
+        cp android-sh-output.txt ../artifacts/android-sh-output.txt || true
+
+        # Also capture any cpu-features ndk-build output if present
         CPUF="$ANDROID_NDK_ROOT/sources/android/cpufeatures"
         if [ -d "$CPUF" ]; then
-          echo "cpufeatures folder exists → running ndk-build directly"
-          cd "$CPUF"
-
-          rm -rf obj libs || true
-
+          # run ndk-build in cpufeatures to produce trace if needed (don't fail step on this)
           set +e
-          "$ANDROID_NDK_ROOT/ndk-build" V=1 2>&1 | tee /tmp/cpufeatures-ndk-build.txt
-          NDK_RC=$?
+          (cd "$CPUF" && "$ANDROID_NDK_ROOT/ndk-build" V=1) > ../artifacts/cpufeatures-ndk-build.txt 2>&1 || true
           set -e
-
-          echo "===== ndk-build exit code: $NDK_RC ====="
-          tail -n 200 /tmp/cpufeatures-ndk-build.txt || true
-
-          echo "===== cpufeatures obj/libs content ====="
-          find . -maxdepth 3 -type d -exec ls -la {} \; || true
-        else
-          echo "ERROR: cpufeatures folder missing!"
-          ls -la "$ANDROID_NDK_ROOT/sources/android" || true
         fi
 
+        # Upload artifacts directory via actions/upload-artifact step below
+        # finally exit with the android.sh exit code so the job marks fail/success correctly
         exit $EXITCODE
+
+    - name: Upload build artifacts (logs)
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ffmpeg-kit-build-logs
+        path: artifacts
