@@ -48,13 +48,8 @@ jobs:
 
         export ANDROID_NDK_ROOT="$HOME/ndk/android-ndk-r26d"
         
-        ./android.sh ffmpeg \
-          --enable-gpl \
-          --enable-lts \
-          --disable-vulkan \
-          --enable-arm64 \
-          --enable-armv7 \
-          --ffmpeg-source-dir="$(pwd)/prebuilt/ffmpeg"
+        ./android.sh --help
+
 
     - name: Upload AAR
       uses: actions/upload-artifact@v4
