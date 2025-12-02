@@ -20,12 +20,12 @@ jobs:
         sudo apt install -y yasm nasm unzip git build-essential \
           automake autoconf libtool pkg-config openjdk-17-jdk python3
 
-    - name: Download Android NDK r26d
+    - name: Download Android NDK r25c (required for mobile-ffmpeg v4.x)
       run: |
         mkdir -p "$HOME/ndk"
-        wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip -O ndk.zip
+        wget -q https://dl.google.com/android/repository/android-ndk-r25c-linux.zip -O ndk.zip
         unzip -q ndk.zip
-        mv android-ndk-* "$HOME/ndk/android-ndk-r26d"
+        mv android-ndk-r25c "$HOME/ndk/"
 
     - name: Clone ffmpeg-kit
       run: |
