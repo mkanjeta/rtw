@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
+      ANDROID_SDK_ROOT: ${{ runner.workspace }}/android-sdk
       NDK_ZIP_URL: "https://dl.google.com/android/repository/android-ndk-r26d-linux.zip"
 
     steps:
@@ -39,6 +39,8 @@ jobs:
           curl -L -o ndk.zip "$NDK_ZIP_URL"
           unzip -q ndk.zip -d $HOME
           mv $HOME/android-ndk-*/* $HOME/ndk/
+          echo "ndk.dir=$HOME/ndk" > ffmpeg-kit/android/local.properties
+          echo "sdk.dir=${ANDROID_SDK_ROOT}" >> ffmpeg-kit/android/local.properties
 
       - name: Clone ffmpeg-kit
         run: |
