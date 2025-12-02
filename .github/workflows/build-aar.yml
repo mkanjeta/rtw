@@ -48,7 +48,15 @@ jobs:
 
         export ANDROID_NDK_ROOT="$HOME/ndk/android-ndk-r26d"
         
-        ./android.sh --help
+        
+        ./android.sh \
+          --lts \
+          --enable-gpl \
+          --disable-x86 \
+          --disable-x86-64 \
+          --disable-arm-v7a-neon \
+          --no-ffmpeg-kit-protocols \
+          --disable-vulkan
 
 
     - name: Upload AAR
