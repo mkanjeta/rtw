@@ -30,6 +30,25 @@ jobs:
         cd ffmpeg-kit
         git submodule update --init --recursive
 
+    - name: Force-use NDK cpufeatures (disable git download)
+      run: |
+        set -e
+        cd ffmpeg-kit
+    
+        CPU_DIR="src/cpu-features"
+        NDK_CPU_DIR="$HOME/ndk/android-ndk-r21e/sources/android/cpufeatures"
+    
+        echo "Replacing ffmpeg-kit cpu-features with NDK version..."
+        rm -rf "$CPU_DIR"
+        mkdir -p src
+        cp -r "$NDK_CPU_DIR" "$CPU_DIR"
+    
+        # Patch function-android.sh to disable cpu-features git clone
+        sed -i '/cpu-features/,/fi/{/download_library_source/s/^/#/}' scripts/function-android.sh
+    
+        echo "Patched ffmpeg-kit to use NDK cpu-features only"
+
+
     - name: Patch cpu-features CMakeLists for modern CMake
       run: |
         set -e
