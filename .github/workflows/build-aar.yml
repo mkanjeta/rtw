@@ -16,19 +16,19 @@ jobs:
       ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
       NDK_ZIP_URL: "https://dl.google.com/android/repository/android-ndk-r26d-linux.zip"
 
-        steps:
+    steps:
       - name: Install dependencies
         run: |
           sudo apt update
           sudo apt install -y curl unzip git openjdk-17-jdk build-essential pkg-config autoconf automake libtool yasm nasm zip
 
-      - name: Install Android SDK
+      - name: Install Android SDK cmdline-tools
         run: |
           mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools"
           cd "${ANDROID_SDK_ROOT}"
           curl -L -o tools.zip "https://dl.google.com/android/repository/commandlinetools-linux-8512546_latest.zip"
           unzip -q tools.zip -d cmdline-tools-temp
-          mkdir cmdline-tools/latest
+          mkdir -p cmdline-tools/latest
           mv cmdline-tools-temp/cmdline-tools/* cmdline-tools/latest/
           yes | cmdline-tools/latest/bin/sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" "platform-tools" "platforms;android-33" "build-tools;33.0.2"
 
@@ -45,12 +45,19 @@ jobs:
           cd ffmpeg-kit
           git submodule update --init --recursive || true
 
-      - name: Create Android local.properties
+      - name: Create local.properties for Android build
         run: |
           echo "ndk.dir=$HOME/ndk" > ffmpeg-kit/android/local.properties
           echo "sdk.dir=${ANDROID_SDK_ROOT}" >> ffmpeg-kit/android/local.properties
+          ls -la ffmpeg-kit/android || true
 
-      - name: Build ffmpeg-kit with 16KB page alignment
+      - name: Clone FFmpeg source (LTS tag)
+        run: |
+          TAG="${{ github.event.inputs.ffmpeg_tag }}"
+          if [ -z "$TAG" ]; then TAG="n6.0"; fi
+          git clone --depth 1 --branch "$TAG" https://github.com/FFmpeg/FFmpeg ffmpeg-kit/ffmpeg
+
+      - name: Build ffmpeg-kit (FFmpeg + ffmpeg-kit native libs) with 16KB alignment
         run: |
           cd ffmpeg-kit
           chmod +x android.sh
@@ -58,16 +65,31 @@ jobs:
           export ANDROID_HOME="${ANDROID_SDK_ROOT}"
           export PATH="$HOME/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
           export EXTRA_LDFLAGS="-Wl,-z,max-page-size=16384"
+          # Enable the mobile ABIs we want; adjust flags if your android.sh variant differs
           ./android.sh --enable-gpl --enable-arm64-v8a --enable-arm-v7a --disable-x86 --disable-x86-64
 
-      - name: Build AAR
+      - name: Build the Android AAR with Gradle
         run: |
           cd ffmpeg-kit/android
           chmod +x ./gradlew
           ./gradlew :ffmpeg-kit-android-lib:assembleRelease --no-daemon --stacktrace
 
-      - name: Upload AAR
+      - name: Show produced AAR and upload
+        run: |
+          OUT_DIR="ffmpeg-kit/android/ffmpeg-kit-android-lib/build/outputs/aar"
+          echo "Listing AAR dir: $OUT_DIR"
+          ls -la "$OUT_DIR" || true
+          AAR=$(find "$OUT_DIR" -name "*release.aar" -print -quit)
+          if [ -z "$AAR" ]; then
+            echo "No AAR found; listing possible .so files for debugging:"
+            find ffmpeg-kit -type f -name "*.so" -print | sed -n '1,200p' || true
+            exit 1
+          fi
+          echo "AAR found: $AAR"
+          cp "$AAR" /tmp/ffmpeg-kit-min-gpl-16kb.aar
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ffmpeg-kit-min-gpl-16kb-aar
-          path: ffmpeg-kit/android/ffmpeg-kit-android-lib/build/outputs/aar/ffmpeg-kit-release.aar
+          path: /tmp/ffmpeg-kit-min-gpl-16kb.aar
