@@ -50,7 +50,7 @@ jobs:
 
         ./android.sh \
           --lts \
-          --min-gpl \
+          --full-gpl \
           --disable-vulkan \
           --android-ndk="$ANDROID_NDK_ROOT" \
           --ffmpeg-source-dir="$(pwd)/prebuilt/ffmpeg" \
