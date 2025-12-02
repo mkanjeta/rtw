@@ -19,6 +19,87 @@ jobs:
         sudo apt update
         sudo apt install -y yasm nasm unzip git build-essential \
           automake autoconf libtool pkg-config openjdk-17-jdk python3
+    
+    - name: Debug ffmpeg-kit ./android.sh (capture cpu-features failure)
+      run: |
+        set -euo pipefail
+    
+        cd ffmpeg-kit
+    
+        # explicit NDK path (change if your NDK lives elsewhere)
+        export ANDROID_NDK_ROOT="$HOME/ndk/android-ndk-r25c"
+        export ANDROID_NDK_HOME="$ANDROID_NDK_ROOT"
+        export NDK_HOME="$ANDROID_NDK_ROOT"
+        export PATH="$ANDROID_NDK_ROOT:$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+    
+        echo "NDK path: $ANDROID_NDK_ROOT"
+        echo "ndk-build exists at:"
+        ls -la "$ANDROID_NDK_ROOT"/ndk-build || true
+        echo "clang exists (sample):"
+        ls -la "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" || true
+    
+        # ensure tools are executable
+        chmod -R a+rX "$ANDROID_NDK_ROOT"
+    
+        # run the build but do NOT fail the step on the script's exit,
+        # so we can print the build.log and cpu-features native build output
+        set +e
+        ./android.sh \
+          --lts \
+          --enable-gpl \
+          --disable-x86 \
+          --disable-x86-64 \
+          --disable-arm-v7a-neon \
+          --no-ffmpeg-kit-protocols \
+          2>&1 | tee android-sh-output.txt
+        EXITCODE=$?
+        set -e
+    
+        echo "android.sh exit code: $EXITCODE"
+        echo "---- tail of android-sh-output ----"
+        tail -n 200 android-sh-output.txt || true
+    
+        # Print the build.log location (script usually writes build.log into working dir)
+        echo "==== build.log (if exists) ===="
+        if [ -f build.log ]; then
+          echo "build.log present — printing last 400 lines:"
+          tail -n 400 build.log || true
+        else
+          echo "build.log not found at $PWD/build.log — searching..."
+          find . -type f -name build.log -maxdepth 4 -print -exec tail -n 200 {} \; || true
+        fi
+    
+        # Now run ndk-build directly inside cpufeatures to get the raw error
+        CPUF="$ANDROID_NDK_ROOT/sources/android/cpufeatures"
+        if [ -d "$CPUF" ]; then
+          echo "=== Running ndk-build inside cpufeatures to capture raw error ==="
+          cd "$CPUF" || exit 1
+    
+          # clean previous outputs
+          if [ -d obj ]; then rm -rf obj; fi
+          if [ -d libs ]; then rm -rf libs; fi
+    
+          # run ndk-build verbosely and capture output
+          set +e
+          "$ANDROID_NDK_ROOT/ndk-build" V=1 2>&1 | tee /tmp/cpufeatures-ndk-build.txt
+          NDK_RC=$?
+          set -e
+    
+          echo "ndk-build exit code: $NDK_RC"
+          echo "---- cpufeatures ndk-build output ----"
+          tail -n 400 /tmp/cpufeatures-ndk-build.txt || true
+    
+          # show obj and logs
+          echo "=== cpufeatures contents (obj/libs) ==="
+          find . -maxdepth 3 -type d -print -exec ls -la {} \; || true
+        else
+          echo "cpufeatures folder not found at $CPUF - this is unexpected since NDK showed cpufeatures earlier."
+          ls -la "$ANDROID_NDK_ROOT/sources/android" || true
+        fi
+    
+        # fail the step to keep CI showing as failed (so you see logs)
+        exit $EXITCODE
+
 
     - name: Download Android NDK r25c
       run: |
